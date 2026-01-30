@@ -53,12 +53,13 @@ $stmt->bind_param("ii", $game_id, $player['id']);
 $stmt->execute();
 $playerData = $stmt->get_result()->fetch_assoc();
 
-// Get opponent's card count (not their actual cards)
+// Get opponent's data
 $opponent_id = ($game['player1_id'] == $player['id']) ? $game['player2_id'] : $game['player1_id'];
 $opponent_cards = 0;
+$opponentData = null;
 
 if ($opponent_id) {
-    $stmt = $mysqli->prepare("SELECT hand FROM game_players WHERE game_id = ? AND player_id = ?");
+    $stmt = $mysqli->prepare("SELECT * FROM game_players WHERE game_id = ? AND player_id = ?");
     $stmt->bind_param("ii", $game_id, $opponent_id);
     $stmt->execute();
     $opponentData = $stmt->get_result()->fetch_assoc();
@@ -80,7 +81,7 @@ $response = [
     "opponent_cards" => $opponent_cards,
     "your_score" => $playerData['score'],
     "your_xeres" => $playerData['xeres'],
-    "your_jack_xeres" => $playerData['jack_xeres'],
+    "your_jack_xeres" => $playerData['jack_xeres'] ?? 0,
     "your_captured" => count(json_decode($playerData['captured'], true)),
     "is_your_turn" => $is_your_turn,
     "players" => [
@@ -88,5 +89,31 @@ $response = [
         "player2" => $game['player2_name'] ?? "Waiting..."
     ]
 ];
+
+// If game is finished, show final scores
+if ($game['status'] === 'finished' && $opponentData) {
+    $yourScore = $playerData['score'];
+    $opponentScore = $opponentData['score'];
+
+    if ($yourScore > $opponentScore) {
+        $result = "You win!";
+    } elseif ($opponentScore > $yourScore) {
+        $result = "You lose!";
+    } else {
+        $result = "It's a tie!";
+    }
+
+    $response["final_scores"] = [
+        "your_score" => $yourScore,
+        "opponent_score" => $opponentScore,
+        "your_cards" => count(json_decode($playerData['captured'], true)),
+        "opponent_cards" => count(json_decode($opponentData['captured'], true)),
+        "your_xeres" => $playerData['xeres'],
+        "your_jack_xeres" => $playerData['jack_xeres'] ?? 0,
+        "opponent_xeres" => $opponentData['xeres'],
+        "opponent_jack_xeres" => $opponentData['jack_xeres'] ?? 0,
+        "result" => $result
+    ];
+}
 
 echo json_encode($response);
