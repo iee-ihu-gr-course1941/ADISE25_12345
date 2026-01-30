@@ -80,6 +80,7 @@ $response = [
     "opponent_cards" => $opponent_cards,
     "your_score" => $playerData['score'],
     "your_xeres" => $playerData['xeres'],
+    "your_jack_xeres" => $playerData['jack_xeres'],
     "your_captured" => count(json_decode($playerData['captured'], true)),
     "is_your_turn" => $is_your_turn,
     "players" => [

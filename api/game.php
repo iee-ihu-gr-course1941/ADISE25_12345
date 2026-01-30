@@ -72,7 +72,94 @@ $tableCards = json_decode($game['table_cards'], true);
 
 //Get card value (without the symbol)
 function getCardValue($card) {
-    return substr($card, 0, -1); // Remove last character
+    return substr($card, 0, -1);
+}
+
+// Count points from captured cards
+function countPoints($cards): int
+{
+    $points = 0;
+
+    foreach ($cards as $card) {
+        $value = getCardValue($card);
+
+        // 2 of Clubs = 1 point
+        if ($card === '2C') {
+            $points += 1;
+        }
+        // 10 of Diamonds = 2 points
+        if ($card === '10D') {
+            $points += 2;
+        }
+        // K, Q, J = 1 point each
+        if (in_array($value, ['K', 'Q', 'J'])) {
+            $points += 1;
+        }
+        // 10 (except 10D) = 1 point
+        if ($value === '10' && $card !== '10D') {
+            $points += 1;
+        }
+    }
+
+    return $points;
+}
+
+// Calculate final scores
+function calculateScores($mysqli, $game_id, $player_id, $opponent_id, $playerCaptured): array
+{
+    // Get opponent's captured cards
+    $stmt = $mysqli->prepare("SELECT captured, xeres, jack_xeres FROM game_players WHERE game_id = ? AND player_id = ?");
+    $stmt->bind_param("ii", $game_id, $opponent_id);
+    $stmt->execute();
+    $oppData = $stmt->get_result()->fetch_assoc();
+    $opponentCaptured = json_decode($oppData['captured'], true);
+    $opponentXeres = $oppData['xeres'];
+    $opponentJackXeres = $oppData['jack_xeres'];
+
+    // Get player's xeres
+    $stmt = $mysqli->prepare("SELECT xeres, jack_xeres FROM game_players WHERE game_id = ? AND player_id = ?");
+    $stmt->bind_param("ii", $game_id, $player_id);
+    $stmt->execute();
+    $playerData = $stmt->get_result()->fetch_assoc();
+    $playerXeres = $playerData['xeres'];
+    $playerJackXeres = $playerData['jack_xeres'];
+
+    // Calculate points for each player
+    $playerPoints = countPoints($playerCaptured);
+    $playerPoints += ($playerXeres * 10);
+    $playerPoints += ($playerJackXeres * 20);
+
+    $opponentPoints = countPoints($opponentCaptured);
+    $opponentPoints += ($opponentXeres * 10);
+    $opponentPoints += ($opponentJackXeres * 20);
+
+    // Bonus for most cards (3 points)
+    if (count($playerCaptured) > count($opponentCaptured)) {
+        $playerPoints += 3;
+    } elseif (count($opponentCaptured) > count($playerCaptured)) {
+        $opponentPoints += 3;
+    }
+
+    // Update scores in database
+    $stmt = $mysqli->prepare("UPDATE game_players SET score = ? WHERE game_id = ? AND player_id = ?");
+    $stmt->bind_param("iii", $playerPoints, $game_id, $player_id);
+    $stmt->execute();
+
+    $stmt = $mysqli->prepare("UPDATE game_players SET score = ? WHERE game_id = ? AND player_id = ?");
+    $stmt->bind_param("iii", $opponentPoints, $game_id, $opponent_id);
+    $stmt->execute();
+
+    return [
+        "your_score" => $playerPoints,
+        "opponent_score" => $opponentPoints,
+        "your_cards" => count($playerCaptured),
+        "opponent_cards" => count($opponentCaptured),
+        "your_xeres" => $playerXeres,
+        "your_jack_xeres" => $playerJackXeres,
+        "opponent_xeres" => $opponentXeres,
+        "opponent_jack_xeres" => $opponentJackXeres,
+        "winner" => $playerPoints > $opponentPoints ? "you" : ($opponentPoints > $playerPoints ? "opponent" : "tie")
+    ];
 }
 
 // Play the card
@@ -82,6 +169,7 @@ $topCardValue = $topCard ? getCardValue($topCard) : null;
 
 $isCapture = false;
 $isXeri = false;
+$isJackXeri = false;
 $capturedCards = [];
 
 // Check for capture: same value OR Jack captures all
@@ -90,9 +178,12 @@ if ($topCard && ($cardValue === $topCardValue || $cardValue === 'J')) {
     $capturedCards = $tableCards;
     $capturedCards[] = $card; // Include played card
 
-    // Check for Xeri (capture single card, not with Jack)
-    if (count($tableCards) === 1 && $cardValue !== 'J') {
+    // Check for Xeri (capture single card)
+    if (count($tableCards) === 1) {
         $isXeri = true;
+        if ($cardValue === 'J') {
+            $isJackXeri = true;
+        }
     }
 
     // Clear table
@@ -110,8 +201,14 @@ $captured = array_merge($captured, $capturedCards);
 
 // Update xeres count
 $xeres = $playerData['xeres'];
+$jackXeres = $playerData['jack_xeres'] ?? 0;
+
 if ($isXeri) {
-    $xeres++;
+    if ($isJackXeri) {
+        $jackXeres++;
+    } else {
+        $xeres++;
+    }
 }
 
 // Determine next turn
@@ -154,7 +251,7 @@ if (count($hand) === 0 && count($opponentHand) === 0 && count($deck) > 0) {
 
 // Check for game end
 $gameEnd = false;
-$winner = null;
+$scores = null;
 
 if (count($hand) === 0 && count($opponentHand) === 0 && count($deck) === 0) {
     $gameEnd = true;
@@ -179,13 +276,16 @@ if (count($hand) === 0 && count($opponentHand) === 0 && count($deck) === 0) {
         }
         $tableCards = [];
     }
+
+    // Calculate scores
+    $scores = calculateScores($mysqli, $game_id, $player['id'], $opponent_id, $captured);
 }
 
 // Update player's data
-$stmt = $mysqli->prepare("UPDATE game_players SET hand = ?, captured = ?, xeres = ? WHERE game_id = ? AND player_id = ?");
+$stmt = $mysqli->prepare("UPDATE game_players SET hand = ?, captured = ?, xeres = ?, jack_xeres = ? WHERE game_id = ? AND player_id = ?");
 $handJson = json_encode($hand);
 $capturedJson = json_encode($captured);
-$stmt->bind_param("ssiii", $handJson, $capturedJson, $xeres, $game_id, $player['id']);
+$stmt->bind_param("ssiiii", $handJson, $capturedJson, $xeres, $jackXeres, $game_id, $player['id']);
 $stmt->execute();
 
 // Update game
@@ -203,14 +303,16 @@ $response = [
     "captured" => $isCapture,
     "captured_cards" => $capturedCards,
     "xeri" => $isXeri,
+    "jack_xeri" => $isJackXeri,
     "your_hand" => $hand,
     "table_cards" => $tableCards,
     "cards_dealt" => $needDeal,
     "game_over" => $gameEnd
 ];
 
-if ($gameEnd) {
+if ($gameEnd && $scores) {
     $response["message"] = "Game Over!";
+    $response["final_scores"] = $scores;
 }
 
 echo json_encode($response);
